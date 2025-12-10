@@ -1,0 +1,1 @@
+{ "name": "devops-automation-agent", "version": "0.1.0", "description": "AI Agent for DevOps Automation - AssembleHack25", "main": "src/agents/devops-agent.js", "scripts": { "start": "node src/agents/devops-agent.js", "test": "echo \"Tests coming soon\"" }, "keywords": ["ai-agent", "devops", "automation", "kestra", "oumi", "cline"], "author": "Ashish Patil", "license": "MIT" }
