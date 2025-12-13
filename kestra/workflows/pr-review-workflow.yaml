@@ -7,3 +7,15 @@ triggers:
   - id: github_webhook
     type: io.kestra.plugin.core.trigger.Webhook
     description: "Triggered when PR is opened on GitHub"
+
+tasks:
+  # Task 1: Log incoming PR information
+  - id: log_pr_info
+    type: io.kestra.core.tasks.log.Log
+    message: |
+    New PR received!
+    PR URL: {{ trigger.body.pull_request.html_url }}
+    PR Number: {{ trigger.body.pull_request.number }}
+    Repository: {{ trigger.body.repository.full_name }}
+    Action: {{ trigger.body.action }}
+    
