@@ -1,6 +1,6 @@
 id: pr-review-workflow
 namespace: devopsflow
-description: "INtelligent Code Review using CodeRabbit + GitHub"
+description: "Intelligent Code Review using CodeRabbit + GitHub"
 
 # Webhook trigger - Listens For GitHub Events
 triggers:
@@ -13,9 +13,41 @@ tasks:
   - id: log_pr_info
     type: io.kestra.core.tasks.log.Log
     message: |
-    New PR received!
-    PR URL: {{ trigger.body.pull_request.html_url }}
-    PR Number: {{ trigger.body.pull_request.number }}
-    Repository: {{ trigger.body.repository.full_name }}
-    Action: {{ trigger.body.action }}
-    
+      New PR received!
+      PR URL: {{ trigger.body.pull_request.html_url }}
+      PR Number: {{ trigger.body.pull_request.number }}
+      Repository: {{ trigger.body.repository.full_name }}
+      Action: {{ trigger.body.action }}
+
+  # Task 2: Extract PR details using Python script
+  - id: extract_pr_details
+    type: io.kestra.plugin.scripts.python.Script
+    script: |
+      import json
+      from kestra import kestra
+
+      # Access the webhook payload sent by GitHub
+      # trigger.body contains the entire webhook json
+      webhook_data = {{ trigger.body | tojson}}
+
+      # Extract only the needed info for code review
+      pr_number = webhook_data['pull_request']['number']
+      pr_url = webhook_data['pull_request']['html_url']
+      diff_url = webhook_data['pull_request']['diff_url']
+      repo_full_name = webhook_data['repository']['full_name']
+
+      # Dictionary with needed key-value pairs
+      output = {
+          'pr_number': pr_number,
+          'pr_url': pr_url,
+          'diff_url': diff_url,
+          'repo_full_name': repo_full_name
+      }
+
+      # saving to file so the next task can read it
+      # {{ outputDir }} is a kestra variable pointing to task output folder
+      with open('{{ outputDir }}/pr_details.json', 'w') as f:
+      json.dump(output, f, indent=2)
+
+      # print to kestra logs for debugging
+      print(json.dumps(output, indent=2))
