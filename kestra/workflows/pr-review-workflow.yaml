@@ -1,0 +1,9 @@
+id: pr-review-workflow
+namespace: devopsflow
+description: "INtelligent Code Review using CodeRabbit + GitHub"
+
+# Webhook trigger - Listens For GitHub Events
+triggers:
+  - id: github_webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    description: "Triggered when PR is opened on GitHub"
