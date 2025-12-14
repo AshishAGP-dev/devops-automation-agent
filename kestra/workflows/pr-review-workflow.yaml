@@ -239,3 +239,60 @@ tasks:
       with open('{{ outputDir }}/github_comment.txt', 'w') as f:
         f.write(comment)
 
+  # Task 5: Post the formatted comment to GitHub PR
+  - id: post_github_comment
+    type: io.kestra.plugin.scripts.python.Script
+    allowFailure: true
+    script: |
+      import requests
+      import os
+      import json
+
+      # Read PR details and the formatted comment
+      with open('{{ outputs.extract_pr_details.outputFiles["pr_details.json"] }}', 'r') as f:
+        pr_details = json.load(f)
+      
+      with open('{{ outputs.format_review_comment.outputFiles["github_comment.txt"] }}', 'r') as f:
+        comment_body = f.read()
+
+      # Get GitHub token from environment
+      GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+      if not GITHUB_TOKEN:
+        GITHUB_TOKEN = '{{ secret("GITHUB_TOKEN") }}'
+
+      REPO_FULL_NAME = pr_details['repo_full_name']
+      PR_NUMBER = pr_details['pr_number']
+
+      # GitHub API endpoint for posting PR comments
+      url = f"https://api.github.com/repos/{REPO_FULL_NAME}/issues/{PR_NUMBER}/comments"
+
+      # GitHub requires Bearer token authentication
+      headers = {
+          "Authorization": f"Bearer {GITHUB_TOKEN}",
+          "Accept": "application/vnd.github.v3+jason" }
+
+      payload = {
+          "body": comment_body }
+
+      try:
+        response = requests.post(
+              url,
+              headers=headers,
+              json=payload,
+              timeout=10
+          )
+
+        # HTTP 201 = Created (comment posted successfully)
+        if response.status_code == 201:
+          print("Comment posted to GitHub successfully!")
+          comment_data = response.json()
+          print(f"Comment URL: {comment_data['html_url']}")
+        
+        else:
+          print(f"GitHub API Error: {response.status_code}")
+          print(response.text)
+
+      except Exception as e:
+        print(f"Error posting to GitHub: {str(e)}")
+
+    
