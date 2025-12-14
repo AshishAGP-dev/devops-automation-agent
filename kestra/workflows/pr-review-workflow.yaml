@@ -295,4 +295,20 @@ tasks:
       except Exception as e:
         print(f"Error posting to GitHub: {str(e)}")
 
+  # Task 6: Log completion summary
+  - id: completion_summary
+    type: io.kestra.core.tasks.log.Log
+    message: |
+      Code Review Workflow Completion Completed!
+
+      Workflow Summary:
+      - Extracted PR information
+      - Analyzed code with Groq AI
+      - Formatted findings
+      - Posted to GitHub
+
+      Next Steps:
+      1. Check GitHub PR for the new comment
+      2. Review the findings
+      3. Commit fixes if needed
     
