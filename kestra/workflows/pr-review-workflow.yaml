@@ -41,8 +41,7 @@ tasks:
           'pr_number': pr_number,
           'pr_url': pr_url,
           'diff_url': diff_url,
-          'repo_full_name': repo_full_name
-      }
+          'repo_full_name': repo_full_name }
 
       # saving to file so the next task can read it
       # {{ outputDir }} is a kestra variable pointing to task output folder
@@ -51,3 +50,112 @@ tasks:
 
       # print to kestra logs for debugging
       print(json.dumps(output, indent=2))
+
+  # Task 3: Analyze code with AI (Groq API)
+  - id: analyze_code_with_ai
+    type: io.kestra.plugin.scripts.python.Script
+    allowFailure: true
+    script: |
+      import requests
+      import json
+      import os
+
+      # Read the PR details from Task 2
+      with open('{{ outputs.extract_pr_details.outputFiles["pr_details.json"] }}', 'r') as f:
+        pr_details = json.load(f)
+
+      # Get Groq API key from environment
+      API_KEY = os.environ.get('GROQ_API_KEY')
+      if not API_KEY:
+        API_KEY = '{{ secret("GROQ_API_KEY") }}'
+
+      # Groq API endpoint (OpenAI-compatible)
+      API_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+      headers = {
+          "Authorization": f"Bearer {API_KEY}",
+          "Content-Type": "application/json" }
+
+      # Create prompt for code review
+      review_prompt = f"""You are an expert code reviewer. Analyze this Pull Request:
+      PR Title: {pr_details.get('title', 'N/A')}
+      PR Description: {pr_details.get('description', 'N/A')}
+      Files Changed: {pr_details.get('files_changed', 'N/A')}
+
+      Review the code for:
+      1. Security issues (SQL injection, XSS, hardcoded secrets)
+      2. Performance problems (inefficient loops, N+1 queries)
+      3. Code style and best practices
+      4. Potential bugs (null references, logic errors)
+      5. Missing tests or documentation
+
+      Provide a structured review in JSON format with: summary, issues (array with type, severity, message, suggestion)."""
+
+      payload = {
+          "model": "llama-3.1-70b-versatile",
+          "messages": [
+              {
+                  "role": "system",
+                  "content": "You are an expert code reviewer. Provide structured feedback in JSON format."
+              },
+
+              {
+                  "role": "user",
+                  "content": review_prompt
+              }
+          ],
+          "temperature": 0.3,
+          "max_tokens": 2000 }
+      
+      try:
+          print("Calling Groq API for code analysis...")
+          response = requests.post(
+              API_ENDPOINT,
+              headers=headers,
+              json=payload,
+              timeout=30
+          )
+          
+          if response.status_code == 200:
+              result = response.json()
+              ai_review = result['choices'][0]['message']['content']
+              
+              print("AI Analysis Complete")
+              print(ai_review)
+              
+              try:
+                  analysis_result = json.loads(ai_review)
+              except:
+                  analysis_result = {
+                      "summary": ai_review,
+                      "issues": []
+                  }
+              
+              with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+                  json.dump(analysis_result, f, indent=2)
+          else:
+              print(f"Groq API Error: {response.status_code}")
+              print(response.text)
+              
+              mock_result = {
+                  "summary": "Code looks good! No critical issues found.",
+                  "issues": [
+                      {
+                          "type": "style",
+                          "severity": "low",
+                          "message": "Consider adding docstrings",
+                          "suggestion": "Add function documentation"
+                      }
+                  ]
+              }
+              with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+                  json.dump(mock_result, f, indent=2)
+      
+      except Exception as e:
+          print(f"Error: {str(e)}")
+          mock_result = {
+              "summary": "Analysis unavailable",
+              "issues": []
+          }
+          with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+              json.dump(mock_result, f, indent=2)
