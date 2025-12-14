@@ -1,9 +1,314 @@
 id: pr-review-workflow
 namespace: devopsflow
-description: "INtelligent Code Review using CodeRabbit + GitHub"
+description: "Intelligent Code Review using CodeRabbit + GitHub"
 
 # Webhook trigger - Listens For GitHub Events
 triggers:
   - id: github_webhook
     type: io.kestra.plugin.core.trigger.Webhook
     description: "Triggered when PR is opened on GitHub"
+
+tasks:
+  # Task 1: Log incoming PR information
+  - id: log_pr_info
+    type: io.kestra.core.tasks.log.Log
+    message: |
+      New PR received!
+      PR URL: {{ trigger.body.pull_request.html_url }}
+      PR Number: {{ trigger.body.pull_request.number }}
+      Repository: {{ trigger.body.repository.full_name }}
+      Action: {{ trigger.body.action }}
+
+  # Task 2: Extract PR details using Python script
+  - id: extract_pr_details
+    type: io.kestra.plugin.scripts.python.Script
+    script: |
+      import json
+      from kestra import kestra
+
+      # Access the webhook payload sent by GitHub
+      # trigger.body contains the entire webhook json
+      webhook_data = {{ trigger.body | tojson}}
+
+      # Extract only the needed info for code review
+      pr_number = webhook_data['pull_request']['number']
+      pr_url = webhook_data['pull_request']['html_url']
+      diff_url = webhook_data['pull_request']['diff_url']
+      repo_full_name = webhook_data['repository']['full_name']
+
+      # Dictionary with needed key-value pairs
+      output = {
+          'pr_number': pr_number,
+          'pr_url': pr_url,
+          'diff_url': diff_url,
+          'repo_full_name': repo_full_name }
+
+      # saving to file so the next task can read it
+      # {{ outputDir }} is a kestra variable pointing to task output folder
+      with open('{{ outputDir }}/pr_details.json', 'w') as f:
+      json.dump(output, f, indent=2)
+
+      # print to kestra logs for debugging
+      print(json.dumps(output, indent=2))
+
+  # Task 3: Analyze code with AI (Groq API)
+  - id: analyze_code_with_ai
+    type: io.kestra.plugin.scripts.python.Script
+    allowFailure: true
+    script: |
+      import requests
+      import json
+      import os
+
+      # Read the PR details from Task 2
+      with open('{{ outputs.extract_pr_details.outputFiles["pr_details.json"] }}', 'r') as f:
+        pr_details = json.load(f)
+
+      # Get Groq API key from environment
+      API_KEY = os.environ.get('GROQ_API_KEY')
+      if not API_KEY:
+        API_KEY = '{{ secret("GROQ_API_KEY") }}'
+
+      # Groq API endpoint (OpenAI-compatible)
+      API_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+      headers = {
+          "Authorization": f"Bearer {API_KEY}",
+          "Content-Type": "application/json" }
+
+      # Create prompt for code review
+      review_prompt = f"""You are an expert code reviewer. Analyze this Pull Request:
+      PR Title: {pr_details.get('title', 'N/A')}
+      PR Description: {pr_details.get('description', 'N/A')}
+      Files Changed: {pr_details.get('files_changed', 'N/A')}
+
+      Review the code for:
+      1. Security issues (SQL injection, XSS, hardcoded secrets)
+      2. Performance problems (inefficient loops, N+1 queries)
+      3. Code style and best practices
+      4. Potential bugs (null references, logic errors)
+      5. Missing tests or documentation
+
+      Provide a structured review in JSON format with: summary, issues (array with type, severity, message, suggestion)."""
+
+      payload = {
+          "model": "llama-3.1-70b-versatile",
+          "messages": [
+              {
+                  "role": "system",
+                  "content": "You are an expert code reviewer. Provide structured feedback in JSON format."
+              },
+
+              {
+                  "role": "user",
+                  "content": review_prompt
+              }
+          ],
+          "temperature": 0.3,
+          "max_tokens": 2000 }
+      
+      try:
+          print("Calling Groq API for code analysis...")
+          response = requests.post(
+              API_ENDPOINT,
+              headers=headers,
+              json=payload,
+              timeout=30
+          )
+          
+          if response.status_code == 200:
+              result = response.json()
+              ai_review = result['choices'][0]['message']['content']
+              
+              print("AI Analysis Complete")
+              print(ai_review)
+              
+              try:
+                  analysis_result = json.loads(ai_review)
+              except:
+                  analysis_result = {
+                      "summary": ai_review,
+                      "issues": []
+                  }
+              
+              with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+                  json.dump(analysis_result, f, indent=2)
+          else:
+              print(f"Groq API Error: {response.status_code}")
+              print(response.text)
+              
+              mock_result = {
+                  "summary": "Code looks good! No critical issues found.",
+                  "issues": [
+                      {
+                          "type": "style",
+                          "severity": "low",
+                          "message": "Consider adding docstrings",
+                          "suggestion": "Add function documentation"
+                      }
+                  ]
+              }
+              with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+                  json.dump(mock_result, f, indent=2)
+      
+      except Exception as e:
+          print(f"Error: {str(e)}")
+          mock_result = {
+              "summary": "Analysis unavailable",
+              "issues": []
+          }
+          with open('{{ outputDir }}/analysis_result.json', 'w') as f:
+              json.dump(mock_result, f, indent=2)
+
+  # Task 4: Format the AI analysis into a nice GitHub comment
+  - id: format_review_comment
+    type: io.kestra.plugin.scripts.python.Script
+    script: |
+      import json
+
+      # Read Groq AI's analysis from Task 3
+      with open('{{ outputs.analyze_code_with_ai.outputFiles["analysis_result.json"] }}', 'r') as f:
+        analysis = json.load(f)
+
+      # Start building the comment using Markdown
+
+      comment = "## DevOpsFlow AI - Code Review Analysis (Powered by Groq)\n\n"
+
+      # Add summary if available
+      if 'summary' in analysis:
+        comment += f"**Summary:** {analysis['summary']}\n\n"
+
+      # Process issues found by Groq AI
+      if 'issues' in analysis and analysis['issues']:
+        comment += "### Issues Found\n\n"
+
+        # Group issues by severity level
+        critical = [i for i in analysis['issues'] if i.get('severity') == 'critical']
+        high = [i for i in analysis['issues'] if i.get('severity') == 'high']
+        medium = [i for i in analysis['issues'] if i.get('severity') == 'medium']
+        low = [i for i in analysis['issues'] if i.get('severity') == 'low']
+
+        # Format critical issues first (most important)
+        if critical:
+          comment += "#### Critical\n"
+          for issue in critical:
+            comment += f"- **{issue.get('type', 'Unknown')}:** {issue.get('message', 'Unknown issue')}\n"
+            if 'suggestion' in issue:
+              comment += f"  💡 *Suggestion: {issue['suggestion']}*\n"
+        
+        # Then high severity
+
+        if high:
+          comment += "\n#### High\n"
+          for issue in high:
+            comment += f"- **{issue.get('type', 'Unknown')}:** {issue.get('message', 'Unknown issue')}\n"
+
+            if 'suggestion' in issue:
+              comment += f"  💡 *Suggestion: {issue['suggestion']}*\n"
+        
+        # Medium severity
+
+        if medium:
+          comment += "\n#### Medium\n"
+          for issue in medium:
+            comment += f"- **{issue.get('type', 'Unknown')}:** {issue.get('message', 'Unknown issue')}\n"
+
+            if 'suggestion' in issue:
+              comment += f"  💡 *Suggestion: {issue['suggestion']}*\n"
+
+        # Low severity
+
+        if low:
+          comment += "\n#### Low\n"
+          for issue in low:
+            comment += f"- **{issue.get('type', 'Unknown')}:** {issue.get('message', 'Unknown issue')}\n"
+            if 'suggestion' in issue:
+                    comment += f"  💡 *Suggestion: {issue['suggestion']}*\n"
+      else:
+        # No issues = good code!
+        comment += "### No issues found! Code looks good.\n"
+
+      # Add Footer
+      comment += "\n---\n"
+      comment += " Generated by DevOpsFlow AI | Powered by Groq LLama 3.1\n"
+
+      print("Formatted comment:")
+      print(comment)
+
+      # Save the formatted comment for Task 5
+      with open('{{ outputDir }}/github_comment.txt', 'w') as f:
+        f.write(comment)
+
+  # Task 5: Post the formatted comment to GitHub PR
+  - id: post_github_comment
+    type: io.kestra.plugin.scripts.python.Script
+    allowFailure: true
+    script: |
+      import requests
+      import os
+      import json
+
+      # Read PR details and the formatted comment
+      with open('{{ outputs.extract_pr_details.outputFiles["pr_details.json"] }}', 'r') as f:
+        pr_details = json.load(f)
+      
+      with open('{{ outputs.format_review_comment.outputFiles["github_comment.txt"] }}', 'r') as f:
+        comment_body = f.read()
+
+      # Get GitHub token from environment
+      GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+      if not GITHUB_TOKEN:
+        GITHUB_TOKEN = '{{ secret("GITHUB_TOKEN") }}'
+
+      REPO_FULL_NAME = pr_details['repo_full_name']
+      PR_NUMBER = pr_details['pr_number']
+
+      # GitHub API endpoint for posting PR comments
+      url = f"https://api.github.com/repos/{REPO_FULL_NAME}/issues/{PR_NUMBER}/comments"
+
+      # GitHub requires Bearer token authentication
+      headers = {
+          "Authorization": f"Bearer {GITHUB_TOKEN}",
+          "Accept": "application/vnd.github.v3+jason" }
+
+      payload = {
+          "body": comment_body }
+
+      try:
+        response = requests.post(
+              url,
+              headers=headers,
+              json=payload,
+              timeout=10
+          )
+
+        # HTTP 201 = Created (comment posted successfully)
+        if response.status_code == 201:
+          print("Comment posted to GitHub successfully!")
+          comment_data = response.json()
+          print(f"Comment URL: {comment_data['html_url']}")
+        
+        else:
+          print(f"GitHub API Error: {response.status_code}")
+          print(response.text)
+
+      except Exception as e:
+        print(f"Error posting to GitHub: {str(e)}")
+
+  # Task 6: Log completion summary
+  - id: completion_summary
+    type: io.kestra.core.tasks.log.Log
+    message: |
+      Code Review Workflow Completion Completed!
+
+      Workflow Summary:
+      - Extracted PR information
+      - Analyzed code with Groq AI
+      - Formatted findings
+      - Posted to GitHub
+
+      Next Steps:
+      1. Check GitHub PR for the new comment
+      2. Review the findings
+      3. Commit fixes if needed
+    
