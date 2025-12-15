@@ -77,7 +77,7 @@ devops-automation-agent/
 text
 
 ## Demo
-[Link to demo video/screenshots will be added]
+https://www.loom.com/share/f4d5e22acd604bf5827f528eaa413697
 
 ## Testing
 Create a test PR:
